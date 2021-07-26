@@ -6,12 +6,6 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 
-
-typedef FutureOrVoidCallback = FutureOr<void> Function();
-
-typedef WaitCallback = Future<void> Function(
-    [FutureOrVoidCallback? closure, String label]);
-
 /// [_TaskEntry._run]
 typedef EventCallback<T> = FutureOr<T> Function();
 
@@ -27,8 +21,9 @@ typedef EventCallback<T> = FutureOr<T> Function();
 ///
 /// 允许 [addOneEventTask], [addEventTask] 交叉使用
 class EventQueue {
-  static EventQueue? _instance;
   EventQueue({this.channels = 1});
+
+  static EventQueue? _instance;
 
   static EventQueue get instance {
     _instance ??= EventQueue();
@@ -39,7 +34,7 @@ class EventQueue {
 
   final int channels;
 
-  SchedulerBinding get scheduler => SchedulerBinding.instance!;
+  static SchedulerBinding get scheduler => SchedulerBinding.instance!;
 
   final _taskPool = <_TaskKey, _TaskEntry>{};
 
@@ -79,11 +74,11 @@ class EventQueue {
   Future<void>? get runner => _runner;
 
   void run() {
-    _runner ??= looper()..whenComplete(() => _runner = null);
+    _runner ??= _run()..whenComplete(() => _runner = null);
   }
 
   @protected
-  Future<void> looper() async {
+  Future<void> _run() async {
     final parallelTasks = <_TaskKey, Future>{};
 
     while (_taskPool.isNotEmpty) {
@@ -98,7 +93,7 @@ class EventQueue {
       final task = _taskPool.values.first;
       final _task = _taskPool.remove(task.key);
 
-      assert(task == _task,'error: task != _task');
+      assert(task == _task, 'error: task != _task');
 
       // 最后一个
       final isEmpty = _taskPool.isEmpty;
@@ -115,7 +110,6 @@ class EventQueue {
 
           // 达到 parallels 数                   ||   最后一个
           if (parallelTasks.length >= channels || isEmpty) {
-            // 异步循环，状态都要更新
             while (_taskPool.isEmpty || parallelTasks.length >= channels) {
               if (parallelTasks.isEmpty) break;
               await Future.any(parallelTasks.values);
@@ -133,55 +127,16 @@ class EventQueue {
     assert(parallelTasks.isEmpty);
   }
 
-  static const _zoneWait = 'eventWait';
   static const _zoneTask = 'eventTask';
+
   // 运行任务
-  //
-  // 提供时间消耗及等待其他任务
   Future<void> eventRun(_TaskEntry task) {
-    return runZoned(task._run, zoneValues: {_zoneWait: _wait, _zoneTask: task});
+    return runZoned(task._run, zoneValues: {_zoneTask: task});
   }
 
-  Future<void> _wait([FutureOrVoidCallback? onLoop, String label = '']) async {
-    final _task = currentTask;
-    if (_task != null && _task.async) {
-      var count = 0;
-      while (scheduler.hasScheduledFrame) {
-        if (count > 5000) break;
-
-        /// 回到事件队列，让出资源
-        await releaseUI;
-        onLoop?.call();
-        if (!_task.async) break;
-        count++;
-      }
-    }
-    await releaseUI;
-  }
-
-  Future<void> wait([FutureOrVoidCallback? closure, label = '']) async {
-    final _w = Zone.current[_zoneWait];
-    if (_w is WaitCallback) {
-      return _w(closure, label);
-    }
-    if (closure != null) await closure();
-    return releaseUI;
-  }
-
-  _TaskEntry? get currentTask {
+ static _TaskEntry? get currentTask {
     final _z = Zone.current[_zoneTask];
     if (_z is _TaskEntry) return _z;
-  }
-
-  bool get async {
-    final _z = currentTask;
-    if (_z is _TaskEntry) return _z.async;
-    return false;
-  }
-
-  set async(bool v) {
-    final _z = currentTask;
-    if (_z is _TaskEntry) _z.async = v;
   }
 }
 
@@ -199,7 +154,7 @@ class _TaskEntry<T> {
   late final key = _TaskKey<T>(_looper, callback, onlyLastOne, objectKey);
 
   final _completer = Completer<T>();
-  var async = true;
+
   Future<T> get future => _completer.future;
 
   Future<void> _run() async {
@@ -207,7 +162,9 @@ class _TaskEntry<T> {
     completed(result);
   }
 
+  bool loop = false;
   bool _completed = false;
+
   void completed([T? result]) {
     assert(!_completed);
     assert(_completed = true);
@@ -222,8 +179,6 @@ class _TaskEntry<T> {
       _completer.complete(result);
     }
   }
-
-  bool loop = false;
 }
 
 class _TaskKey<T> {
@@ -243,12 +198,7 @@ class _TaskKey<T> {
   }
 
   @override
-  int get hashCode => hashValues(callback, _looper, onlyLastOne, T, key);
-}
-
-enum EventStatus {
-  done,
-  ignoreAndRemove,
+  int get hashCode => hashValues(callback, _looper, onlyLastOne, key);
 }
 
 Future<void> get releaseUI => release(Duration.zero);
